@@ -39,36 +39,42 @@ class MazeApp:
         self.end_node = (GRID_SIZE - 1, GRID_SIZE - 1)  # Bottom-right corner
         self.current_path = []
         self.visited_for_drawing = set()  # For drawing visited cells during search
+        self.solving_in_progress = False  # Flag to prevent multiple solve calls
 
         # --- UI Elements ---
         # Control Frame
         control_frame = ttk.Frame(master, padding="10")
         control_frame.pack(side=tk.TOP, fill=tk.X)
 
-        ttk.Button(
+        self.btn_generate = ttk.Button(
             control_frame, text="Generate Obstacles", command=self.generate_obstacles
-        ).pack(side=tk.LEFT, padx=5)
-        ttk.Button(
+        )
+        self.btn_generate.pack(side=tk.LEFT, padx=5)
+        self.btn_dfs = ttk.Button(
             control_frame, text="Solve with DFS", command=lambda: self.solve_maze("DFS")
-        ).pack(side=tk.LEFT, padx=5)
-        ttk.Button(
+        )
+        self.btn_dfs.pack(side=tk.LEFT, padx=5)
+        self.btn_bfs = ttk.Button(
             control_frame, text="Solve with BFS", command=lambda: self.solve_maze("BFS")
-        ).pack(side=tk.LEFT, padx=5)
-        ttk.Button(
+        )
+        self.btn_bfs.pack(side=tk.LEFT, padx=5)
+        self.btn_clear = ttk.Button(
             control_frame,
             text="Clear Solution",
             command=self.clear_solution_visualization,
-        ).pack(side=tk.LEFT, padx=5)
-        ttk.Button(control_frame, text="Reset Maze", command=self.reset_maze).pack(
-            side=tk.LEFT, padx=5
         )
+        self.btn_clear.pack(side=tk.LEFT, padx=5)
+        self.btn_reset = ttk.Button(
+            control_frame, text="Reset Maze", command=self.reset_maze
+        )
+        self.btn_reset.pack(side=tk.LEFT, padx=5)
 
         # Obstacle Density Control
         ttk.Label(control_frame, text="Obstacle Density (%):").pack(
             side=tk.LEFT, padx=(10, 0)
         )
         self.obstacle_density_var = tk.DoubleVar(value=25)  # Default 25%
-        density_scale = ttk.Scale(
+        self.density_scale = ttk.Scale(
             control_frame,
             from_=0,
             to_=100,
@@ -76,7 +82,7 @@ class MazeApp:
             variable=self.obstacle_density_var,
             length=100,
         )
-        density_scale.pack(side=tk.LEFT, padx=5)
+        self.density_scale.pack(side=tk.LEFT, padx=5)
         # Using a label to display the scale value, making it dynamic
         self.density_display_label = ttk.Label(
             control_frame, text=f"{self.obstacle_density_var.get():.0f}"
@@ -162,6 +168,10 @@ class MazeApp:
 
     def generate_obstacles(self):
         """Generates random obstacles in the grid."""
+        if self.solving_in_progress:
+            messagebox.showwarning("Busy", "Solver is currently running. Please wait.")
+            return
+
         self.status_label_var.set("Generating obstacles...")
         self.master.update_idletasks()  # Update GUI before potentially long operation
 
@@ -184,6 +194,10 @@ class MazeApp:
 
     def clear_solution_visualization(self):
         """Clears only the path and visited cells visualization, keeping obstacles."""
+        if self.solving_in_progress:
+            messagebox.showwarning("Busy", "Solver is currently running. Please wait.")
+            return
+
         self.status_label_var.set("Clearing solution...")
         self.master.update_idletasks()
 
@@ -207,6 +221,14 @@ class MazeApp:
 
     def reset_maze(self):
         """Resets the entire maze to an empty grid."""
+        if self.solving_in_progress:  # If a solve is happening, stop it.
+            self.solving_in_progress = False  # This will stop BFS's "after" loop
+            # For DFS, it's harder to interrupt cleanly mid-recursion without more complex threading.
+            # But disabling controls and this flag should prevent new actions.
+            self._set_controls_state(
+                tk.NORMAL
+            )  # Re-enable controls if they were disabled
+
         self.status_label_var.set("Resetting maze...")
         self.master.update_idletasks()
 
@@ -214,17 +236,21 @@ class MazeApp:
         self.current_path = []
         self.visited_for_drawing.clear()
         self.ensure_start_end_clear()  # Ensures start/end are clear on the new empty grid
-        # self.draw_grid() # Redraws the blank grid - draw_maze_elements will handle this
         self.draw_maze_elements()  # Draws start/end and empty cells
         self.status_label_var.set("Maze reset. Generate obstacles to start.")
 
     def solve_maze(self, algorithm_name):
         """Initiates the maze solving process using the selected algorithm."""
+        if self.solving_in_progress:
+            messagebox.showwarning(
+                "Busy", "Another solving process is already running."
+            )
+            return
+
         self.clear_solution_visualization()  # Clear previous solution first
         self.status_label_var.set(f"Solving with {algorithm_name}...")
         self.master.update_idletasks()
 
-        # Check if start or end is blocked (shouldn't happen due to ensure_start_end_clear)
         if (
             self.grid_data[self.start_node[0]][self.start_node[1]] == OBSTACLE
             or self.grid_data[self.end_node[0]][self.end_node[1]] == OBSTACLE
@@ -235,40 +261,50 @@ class MazeApp:
             self.status_label_var.set("Error: Start/End is obstacle.")
             return
 
-        # Disable buttons during solving to prevent multiple calls
         self._set_controls_state(tk.DISABLED)
+        self.solving_in_progress = True
 
         if algorithm_name == "DFS":
             visited_dfs = set()
-            path_dfs = []  # This will hold the path segments during recursion
-            # The actual self.current_path is set if DFS finds the end_node
-            if not self._solve_dfs_recursive_animated(
+            path_dfs = []
+            # Run DFS in a way that doesn't block the UI entirely for too long if ANIMATION_DELAY > 0
+            # For very small ANIMATION_DELAY, this is less of an issue.
+            # A more robust solution for long DFS would be threading.
+            path_found_dfs = self._solve_dfs_recursive_animated(
                 self.start_node, visited_dfs, path_dfs
-            ):
+            )
+            if not path_found_dfs:  # This check happens after DFS completes
                 self.status_label_var.set("DFS: No path found.")
-            # If path was found, status is set in _solve_dfs_recursive_animated
+                self._set_controls_state(tk.NORMAL)
+                self.solving_in_progress = False
+                messagebox.showinfo(
+                    "No Solution",
+                    "DFS could not find a path. Try generating new obstacles or reducing density.",
+                )
+            # If path was found, status, controls, and solving_in_progress flag are handled in _solve_dfs_recursive_animated
 
         elif algorithm_name == "BFS":
-            self._solve_bfs_animated()  # This handles its own status updates internally
+            # BFS is naturally asynchronous due to using root.after() calls for its steps.
+            # Its completion (success or fail) will handle re-enabling controls and showing messages.
+            self._solve_bfs_animated()
 
-        # Re-enable buttons after solving attempt is complete (or if it fails early)
-        # For BFS, this needs to be called at the end of its async process
-        if algorithm_name != "BFS":  # BFS handles its own re-enabling
-            self._set_controls_state(tk.NORMAL)
+        # Note: If DFS returns False (no path), controls are re-enabled above.
+        # If DFS returns True (path found), controls are re-enabled within _solve_dfs_recursive_animated.
+        # For BFS, _solve_bfs_animated handles re-enabling controls in its termination conditions (path found or queue empty).
 
     def _set_controls_state(self, state):
         """Enable or disable control buttons."""
-        for child in self.master.winfo_children():
-            if isinstance(child, ttk.Frame):  # Assuming controls are in a Frame
-                for widget in child.winfo_children():
-                    if isinstance(widget, (ttk.Button, ttk.Scale)):
-                        widget.configure(state=state)
+        self.btn_generate.config(state=state)
+        self.btn_dfs.config(state=state)
+        self.btn_bfs.config(state=state)
+        self.btn_clear.config(state=state)
+        self.btn_reset.config(state=state)
+        self.density_scale.config(state=state)
 
     def _get_neighbors(self, r, c):
         """Returns valid, non-obstacle neighbors of a cell."""
         neighbors = []
         # Order: Right, Down, Left, Up. This order can influence DFS path.
-        # For BFS, order doesn't affect shortest path length, but can affect which shortest path is chosen if multiple exist.
         potential_neighbors = [(r, c + 1), (r + 1, c), (r, c - 1), (r - 1, c)]
         for nr, nc in potential_neighbors:
             if (
@@ -281,6 +317,10 @@ class MazeApp:
 
     # --- DFS Implementation (Recursive with Animation) ---
     def _solve_dfs_recursive_animated(self, current_node, visited, path_accumulator):
+        # If solving_in_progress was set to False externally (e.g., by Reset button), stop.
+        if not self.solving_in_progress:
+            return False  # Indicate that the search was aborted
+
         r, c = current_node
 
         # Base cases for recursion termination
@@ -302,20 +342,25 @@ class MazeApp:
         # Animate the current cell being explored
         if current_node != self.start_node and current_node != self.end_node:
             self.draw_cell(r, c, COLOR_VISITED)
-            self.canvas.update()
-            self.master.after(ANIMATION_DELAY)
+            self.canvas.update()  # Update canvas to show change
+            # self.master.update_idletasks() # Process pending events
+            if ANIMATION_DELAY > 0:  # Only delay if ANIMATION_DELAY is set
+                self.master.after(
+                    ANIMATION_DELAY
+                )  # Use master.after for non-blocking delay
 
         if current_node == self.end_node:
             self.current_path = list(path_accumulator)  # Found the path
             self.draw_final_path()
             self.status_label_var.set("DFS: Path found!")
             self._set_controls_state(tk.NORMAL)  # Re-enable controls
+            self.solving_in_progress = False  # Mark solving as complete
             return True  # Path found
 
         # Recursive step: Explore neighbors
-        # The order of neighbors here matters for DFS path shape
-        # Using the order from _get_neighbors: Right, Down, Left, Up
         for neighbor_r, neighbor_c in self._get_neighbors(r, c):
+            if not self.solving_in_progress:  # Check again before recursive call
+                return False
             if self._solve_dfs_recursive_animated(
                 (neighbor_r, neighbor_c), visited, path_accumulator
             ):
@@ -323,14 +368,8 @@ class MazeApp:
 
         # Backtrack: If no neighbor led to a solution, remove current_node from path
         path_accumulator.pop()
-        # Optionally, visualize backtracking (e.g., change color back to empty or a specific backtrack color)
-        # if current_node != self.start_node and current_node != self.end_node:
-        #     self.draw_cell(r, c, COLOR_EMPTY) # Simple backtrack visualization
-        #     self.canvas.update()
-        #     self.master.after(ANIMATION_DELAY)
+        # No specific visualization for backtracking in this version to keep it cleaner.
 
-        # If this is the initial call from start_node and it returns False, no path was found.
-        # The status for "no path found" will be set in the calling solve_maze function for DFS.
         return False
 
     # --- BFS Implementation (Iterative with Animation) ---
@@ -345,10 +384,21 @@ class MazeApp:
 
         # Inner function for step-by-step animation using root.after()
         def bfs_step():
+            if (
+                not self.solving_in_progress
+            ):  # If solving was cancelled externally (e.g. reset)
+                self._set_controls_state(tk.NORMAL)  # Ensure controls are re-enabled
+                return
+
             if not queue:  # Queue is empty, no path found
                 self.status_label_var.set("BFS: No path found.")
                 self._set_controls_state(tk.NORMAL)  # Re-enable controls
+                self.solving_in_progress = False  # Mark solving as complete
                 self.canvas.update()
+                messagebox.showinfo(
+                    "No Solution",
+                    "BFS could not find a path. Try generating new obstacles or reducing density.",
+                )
                 return
 
             current_node, path_to_current = queue.popleft()
@@ -375,6 +425,7 @@ class MazeApp:
                         self.draw_final_path()
                         self.status_label_var.set("BFS: Path found!")
                         self._set_controls_state(tk.NORMAL)  # Re-enable controls
+                        self.solving_in_progress = False  # Mark solving as complete
                         self.canvas.update()
                         return  # BFS complete
 
@@ -384,11 +435,19 @@ class MazeApp:
                         self.draw_cell(neighbor_r, neighbor_c, COLOR_CURRENT_SEARCH)
 
             self.canvas.update()
-            self.master.after(
-                ANIMATION_DELAY, bfs_step
-            )  # Schedule the next step of BFS
+            if self.solving_in_progress:  # Continue only if still solving
+                if ANIMATION_DELAY > 0:
+                    self.master.after(
+                        ANIMATION_DELAY, bfs_step
+                    )  # Schedule the next step of BFS
+                else:  # If no delay, call directly but yield control to event loop periodically
+                    self.master.after(0, bfs_step)
 
-        bfs_step()  # Start the BFS animation loop
+        # Start the BFS animation loop
+        if ANIMATION_DELAY > 0:
+            self.master.after(ANIMATION_DELAY, bfs_step)
+        else:  # If no delay, start immediately but allow event loop to process
+            self.master.after(0, bfs_step)
 
     def draw_final_path(self):
         """Draws the found path on the canvas."""
@@ -410,9 +469,15 @@ class MazeApp:
 
 def main():
     root = tk.Tk()
-    # Make the window resizable (though cell sizes are fixed, canvas can expand)
-    # root.geometry("800x850") # Optional: set an initial larger window size
     app = MazeApp(root)
+
+    # Handle window close event to stop any ongoing animation
+    def on_closing():
+        if app.solving_in_progress:
+            app.solving_in_progress = False  # Attempt to stop any background solving
+        root.destroy()
+
+    root.protocol("WM_DELETE_WINDOW", on_closing)
     root.mainloop()
 
 
