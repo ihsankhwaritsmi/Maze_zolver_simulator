@@ -3,6 +3,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 import random
 import collections
+import heapq  # For A* priority queue
 
 # Increase recursion limit for large mazes
 sys.setrecursionlimit(200000)
@@ -57,6 +58,7 @@ class MazeApp:
         ttk.Button(control_frame, text="Generate Obstacles", command=self.generate_obstacles).pack(side=tk.LEFT, padx=5)
         ttk.Button(control_frame, text="Solve with DFS", command=lambda: self.solve_maze("DFS")).pack(side=tk.LEFT, padx=5)
         ttk.Button(control_frame, text="Solve with BFS", command=lambda: self.solve_maze("BFS")).pack(side=tk.LEFT, padx=5)
+        ttk.Button(control_frame, text="Solve with A*", command=lambda: self.solve_maze("A*")).pack(side=tk.LEFT, padx=5)
         ttk.Button(control_frame, text="Clear Solution", command=self.clear_solution_visualization).pack(side=tk.LEFT, padx=5)
         ttk.Button(control_frame, text="Reset Maze", command=self.reset_maze).pack(side=tk.LEFT, padx=5)
 
@@ -167,6 +169,9 @@ class MazeApp:
 
         elif algorithm_name == "BFS":
             self._solve_bfs_animated()
+            
+        elif algorithm_name == "A*":
+            self._solve_astar_animated()
 
     def _set_controls_state(self, state):
         for w in self.master.winfo_children():
@@ -245,6 +250,70 @@ class MazeApp:
 
                     queue.append((nbr, new_path))
                     self.draw_cell(nbr[0], nbr[1], COLOR_VISITED)
+
+            self.canvas.update()
+            self.master.after(ANIMATION_DELAY, step)
+
+        step()
+
+    def _manhattan_distance(self, node1, node2):
+        """Calculate Manhattan distance between two nodes."""
+        return abs(node1[0] - node2[0]) + abs(node1[1] - node2[1])
+
+    def _solve_astar_animated(self):
+        # Priority queue for A*: (f_score, node, path)
+        # f_score = g_score (path length) + h_score (heuristic)
+        start_g_score = 0
+        start_h_score = self._manhattan_distance(self.start_node, self.end_node)
+        start_f_score = start_g_score + start_h_score
+        
+        # Initialize priority queue with start node
+        queue = [(start_f_score, self.start_node, [self.start_node])]
+        visited = {self.start_node}
+        self.visited_for_drawing.add(self.start_node)
+        
+        # Keep track of g_scores for each node
+        g_scores = {self.start_node: 0}
+
+        def step():
+            if not queue:
+                retry = messagebox.askretrycancel(
+                    "No Solution",
+                    "Tidak ada jalur dari START ke FINISH.\nCoba lagi?"
+                )
+                if retry:
+                    self.reset_maze()
+                else:
+                    self._set_controls_state(tk.NORMAL)
+                return
+
+            _, node, path = heapq.heappop(queue)
+            r, c = node
+
+            if node not in (self.start_node, self.end_node):
+                self.draw_cell(r, c, COLOR_CURRENT_SEARCH)
+
+            if node == self.end_node:
+                self.current_path = path
+                self.draw_final_path()
+                self.status_label_var.set("A*: Path found!")
+                self._set_controls_state(tk.NORMAL)
+                return
+
+            for nbr in self._get_neighbors(r, c):
+                tentative_g_score = g_scores[node] + 1  # Each step costs 1
+
+                if nbr not in visited or tentative_g_score < g_scores.get(nbr, float('inf')):
+                    g_scores[nbr] = tentative_g_score
+                    h_score = self._manhattan_distance(nbr, self.end_node)
+                    f_score = tentative_g_score + h_score
+                    
+                    if nbr not in visited:
+                        visited.add(nbr)
+                        self.visited_for_drawing.add(nbr)
+                        new_path = path + [nbr]
+                        heapq.heappush(queue, (f_score, nbr, new_path))
+                        self.draw_cell(nbr[0], nbr[1], COLOR_VISITED)
 
             self.canvas.update()
             self.master.after(ANIMATION_DELAY, step)
